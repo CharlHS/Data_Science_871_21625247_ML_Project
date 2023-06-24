@@ -1,0 +1,466 @@
+---
+title: "Data Science Project"
+output:
+  pdf_document:
+#    variant: markdown_github
+---
+Charl Schoeman - 21625247
+
+Data Science 871 Project
+
+24 June 2023
+
+Can we predict Academy Awards Best Picture Winners?
+
+
+# Introduction
+In this project, I will be using supervised learning machine learning methods to build a prediction model that predicts if films that were nominated for the Academy Award (Oscar) for Best Picture will win the award or not. Two different methods will be used to create two alternative models:
+
+1) Linear Discriminant Analysis (LDA)
+
+2) Random Forests (RF)
+
+The results of the two models will be compared using a few metrics, including sensitivity, specificity, an ROC curve and kappa (a reliability measure). Based on these metrics, the most appropriate model will be identified.
+
+This model will then be used to predict the 2023 Best Picture Winners, and then compare it to the actual winner of that year.
+```{r}
+
+rm(list = ls()) # Clean your environment:
+library(tidyverse)
+list.files('code/', full.names = T, recursive = T) %>% .[grepl('.R', .)] %>% as.list() %>% walk(~source(.))
+library(readr)
+library(pacman)
+pacman::p_load(caret)
+pacman::p_load(fmxdat)
+pacman::p_load(rmarkdown)
+pacman::p_load(glue)
+pacman::p_load(writexl)
+pacman::p_load(readxl)
+pacman::p_load(pROC)
+pacman::p_load(ROCR)
+pacman::p_load(ggplot2)
+```
+
+# Basic Model Setup
+The machine learning models will both have the same basic structure. A film either winning the Oscar for Best Picture (or not) will be used as the predicted variable, and a series of attributes of the film will be used as predictor variables. These attributes include the IMDB and Metacritic scores of the film, the amount of Oscars that the film was nominated for (and which specific Oscars), as well as if it won the Golden Globe or BAFTA award for Best Picture. To improve the skill of the models, the amount of Golden Globe awards (across categories) that the film won is also included.
+
+
+IMDB and Metacritic scores are used as a measure of the critical and audience reeption of the films, which is believed to have a large influence on the film's chances of winning. These two scores were used instead of Rotten Tomatoes scores or those of other websites, due to the availability of data for them.
+
+
+A film's chance of winning Best Picture is usually correlated with how many other Oscars it was nominated for. It is highly unlikely that a film that was only nominated for a single Oscar would be seen as the "best", so the amount of nominations is taken as a score of the Academy's view on the film's quality. Even though historical data is used, and thus data is available on whether the film ended up winning Oscars in other categories, only nomination data is used to allow predictions before the announcement of winners. Certain Oscar nominations are usually associated with Best Picture winners, for example almost all Best Picture winners in the past 20 years have also won or been nominated for Best Director. Thus it is also necessary to include a measure of which specific Oscar categories the film is nominated for, in the form of binary indicators for each applicable category. Obviously this means that categories like Animation, Short Films and Documentaries are excluded as such films are not considered for Best Picture.
+
+
+The Oscars is only one of many film awards ceremonies, and is held at the end of what is called "Awards Season". This means that, for each film, there is also data available for how it performed at previous awards ceremonies in that season. This is useful, as there is often an overlap between winners of different awards ceremonies. For this project, data from two high profile awards ceremonies that take place before the Oscars are used: The BAFTAs and the Golden Globes. Due to data availability, for the BAFTAs only an indicator for whether the film won Best Picture is used. Golden Globe data is more readily available, so measures of whether the film won Best Picture, as well as how many Golden Globes it won overall, are used.
+
+
+# Data
+The data used come primarily from two sources. The Oscar nomination and winner data, as well as the Golden Globes winner data was found on Kaggle, an open source online data repository. IMDB scores, Metacritic scores and BAFTA winner data were obtained by webscraping IMDB pages using Octoparse. Only IMDB was used for webscraping as public use of its data is allowed.
+
+
+The data was thoroughly cleaned, combined and processed through a combination of work in r and some work in Microsoft Excel, simply to easily combine the separate datasets. The code used to process the data is included in the README of this repository: https://github.com/CharlHS/Data_Science_871_21625247_ML_Project
+
+Only films that were nominated for the Oscar for Best Picture were included in the final dataset, and all films that had some null values (like no available Metacritic or IMDB scores, which is quite common for very old movies) were removed. This should not be an issue for the predictive ability of the project, as this mainly affects films that were nominated early in the Oscars' history, and thus weren't covered by the Golden Globes or the BAFTAs.
+```{r}
+# First, we start by importing the data:
+aca <- read_csv("D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\oscar\\the_oscar_award.csv")
+imdb <- read_csv("D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\archive\\movie_metadata.csv")
+```
+
+```{r}
+gold = read_csv("D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\oscar\\gg.csv")
+```
+
+
+```{r}
+# Now we want to consolidate the oscars dataset:
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+# Identify all Academy Awards Categories
+cats = table(aca$category)
+length(cats)
+# Consolidate categories whose names have changed:
+# BEST PICTURE
+bp = c("OUTSTANDING MOTION PICTURE", "OUTSTANDING PRODUCTION", "OUTSTANDING MOTION PICTURE", "BEST MOTION PICTURE", "OUTSTANDING PICTURE", "BEST PICTURE")
+oscars = relab(aca, bp, "bp")
+ 
+# DIRECTING (dir)
+oscars = relab(oscars, "DIRECTING", "dir")
+# ACTOR IN A LEADING ROLE (aml)
+act = c("ACTOR", "ACTOR IN A LEADING ROLE")
+oscars = relab(oscars, act, "aml")
+ 
+# ACTRESS IN A LEADING ROLE (afl)
+actr = c("ACTRESS", "ACTRESS IN A LEADING ROLE")
+oscars = relab(oscars, actr, "afl")
+ 
+# CINEMATOGRAPHY (cin)
+cin = c("CINEMATOGRAPHY (Black-and-White)", "CINEMATOGRAPHY (Color)", "CINEMATOGRAPHY")
+oscars = relab(oscars, cin, "cin")
+ 
+# PRODUCTION DESIGN (prod)
+des = c("ART DIRECTION", "ART DIRECTION (Black-and-White)", "ART DIRECTION (Color)", "PRODUCTION DESIGN")
+oscars = relab(oscars, des, "prod")
+ 
+# WRITING (Adapted Screenplay) (wa)
+adapt = c("WRITING (Adaptation)", "WRITING (Adapted Screenplay)", "WRITING (Screenplay--based on material from another medium)", "WRITING (Screenplay--Adapted)", "WRITING (Screenplay--Adapted)", "WRITING (Screenplay Based on Material Previously Produced or Published)")
+oscars = relab(oscars, adapt, "wa")
+ 
+# WRITING (Original Screenplay) (wo)
+orig = c("WRITING (Original Screenplay)", "WRITING (Story and Screenplay)", "WRITING (Original Screenplay)", "WRITING (Screenplay Written Directly for the Screen)")
+oscars = relab(oscars, orig, "wo")
+ 
+# SOUND MIXING (sm)
+sound = c("SOUND RECORDING", "SOUND", "SOUND MIXING")
+oscars = relab(oscars, sound, "sm")
+ 
+# FILM EDITING (fm)
+oscars = relab(oscars, "FILM EDITING", "fm")
+# MUSIC (Original Score) (mo)
+score = c("MUSIC (Scoring)", "MUSIC (Original Score)", "MUSIC (Music Score of a Dramatic or Comedy Picture)", "MUSIC (Scoring of a Musical Picture)", "MUSIC (Original Score)", "MUSIC (Adaptation Score)", "MUSIC (Music Score of a Dramatic Picture)", "MUSIC (Score of a Musical Picture--original or adaptation)", "MUSIC (Original Song Score)", "MUSIC (Original Dramatic Score)", "MUSIC (Original Song Score or Adaptation Score)", "MUSIC (Original Musical or Comedy Score)")
+oscars = relab(oscars, score, "mo")
+ 
+# MUSIC (Original Song) (ms)
+song = c("MUSIC (Song)","MUSIC (Original Song)")
+oscars = relab(oscars, song, "ms")
+# ACTOR IN A SUPPORTING ROLE (ams)
+oscars = relab(oscars, "ACTOR IN A SUPPORTING ROLE", "ams")
+# ACTRESS IN A SUPPORTING ROLE (afs)
+oscars = relab(oscars, "ACTRESS IN A SUPPORTING ROLE", "afs")
+# VISUAL EFFECTS (vis)
+vis = c("VISUAL EFFECTS", "ENGINEERING EFFECTS", "SPECIAL EFFECTS", "SPECIAL VISUAL EFFECTS")
+oscars = relab(oscars, vis, "vis")
+ 
+# COSTUME DESIGN (cos)
+cos = c("COSTUME DESIGN", "COSTUME DESIGN (Black-and-White)", "COSTUME DESIGN (Color)")
+oscars = relab(oscars, cos, "cos")
+ 
+# MAKEUP AND HAIRSTYLING (mak)
+mak = c("MAKEUP AND HAIRSTYLING", "MAKEUP")
+oscars = relab(oscars, mak, "mak")
+ 
+```
+
+```{r}
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+# Remove irrelevant categories:
+keep = c("bp", "dir", "aml", "afl", "cin", "prod", "wa", "wo", "sm", "fm", "mo", "ms", "ams", "afs", "vis", "cos", "mak")
+oscars = sieve(oscars, keep, category)
+length(table(oscars$category))
+```
+
+
+```{r}
+# Now that we have a dataset with only the appropriate categories, we want to create an indicator for whether the film was nominated for a specific award, and also an indicator for whether it won the Best Picture award.
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+for(i in keep){
+    oscars = nom(oscars,i)
+}
+oscars = won(oscars, "bp")
+```
+
+
+```{r}
+# We have numerous films with the same name, enter each film's date in the title to distinguish between them:
+oscars = oscars %>% mutate(film = paste0(film," (",year_film, ")"))
+```
+
+
+```{r}
+# Now we want to consolidate the dataset so that each film only has one entry:
+oscars = oscars %>% arrange(year_film) %>% group_by(film) %>% reframe(year_film, nom_bp = ifelse(sum(nom_bp)>0,1,0), nom_dir = ifelse(sum(nom_dir)>0,1,0), nom_aml = ifelse(sum(nom_aml)>0,1,0), nom_afl = ifelse(sum(nom_afl)>0,1,0), nom_cin = ifelse(sum(nom_cin)>0,1,0), nom_prod = ifelse(sum(nom_prod)>0,1,0),nom_wa = ifelse(sum(nom_wa)>0,1,0), nom_wo = ifelse(sum(nom_wo)>0,1,0), nom_fm = ifelse(sum(nom_fm)>0,1,0), nom_mo = ifelse(sum(nom_mo)>0,1,0), nom_ms = ifelse(sum(nom_ms)>0,1,0), nom_ams = ifelse(sum(nom_ams)>0,1,0), nom_afs = ifelse(sum(nom_afs)>0,1,0), nom_vis = ifelse(sum(nom_vis)>0,1,0), nom_cos = ifelse(sum(nom_cos)>0,1,0), nom_mak = ifelse(sum(nom_mak)>0,1,0), nom_sm = ifelse(sum(nom_sm)>0,1,0), won_bp = ifelse(sum(won_bp)>0,1,0))
+oscars = unique(oscars)
+```
+
+
+```{r}
+# Now we need to remove all films that weren't nominated for Best Picture
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+oscars = sieve(oscars,1, oscars$nom_bp)
+```
+
+
+
+```{r}
+# Now we work with golden globe data:
+# First we want to make a column with all films:
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+gg = gold %>% mutate(title = paste0(title," (",year_film, ")"))
+gg_bp = c("Picture", "Best Motion Picture - Drama", "Best Motion Picture - Musical or Comedy")
+gg = relab(gg,gg_bp, "Best Picture")
+gg = gg %>% mutate(gg_bpw = ifelse(category == "Best Picture" & win == TRUE, 1,0))
+gg_keep= c("Best Picture", "Best Director - Motion Picture", "Best Performance by an Actor in a Motion Picture - Drama", "Best Performance by an Actor in a Motion Picture - Musical or Comedy", "Best Performance by an Actor in a Supporting Role in any Motion Picture", "Best Performance by an Actress in a Motion Picture - Drama", "Best Performance by an Actress in a Motion Picture - Musical or Comedy", "Best Performance by an Actress in a Supporting Role in any Motion Picture", "Best Screenplay - Motion Picture", "Best Original Score - Motion Picture", "Best Original Song - Motion Picture")
+```
+```{r}
+gg = sieve(gg, gg_keep, category)
+gg = gg %>% mutate(wins = ifelse(win==TRUE,1,0))
+gg = gg %>% group_by(title) %>% reframe(wins = sum(wins),gg_bpw = sum(gg_bpw))
+```
+
+
+```{r}
+# Export the datasets to Excel
+write.csv(gg, "D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\oscar\\out_gg.csv")
+write.csv(oscars, "D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\oscar\\out_oscars.csv")
+```
+
+
+
+```{r}
+# Combine Golden Globes data with Oscar data, IMDB data and BAFTA data (done in excel)
+# Now import the completed spreadsheet:
+new_oscars = read_excel("D:\\User folders\\Documents\\2023 Stellenbosch MCom (Economics)\\Semester 1\\Data Science for Economics and Finance 871\\Data_Science_Project\\Project\\data\\archive\\oscars.xlsx")
+# Remove empty values:
+oscars_clean = na.omit(new_oscars)
+```
+
+
+
+# Preliminaries for Machine Learning training
+As stated before, LDA and RF methods are used to train two possible prediction models. All training is done in R, using the caret package. Only the outputs of the machine learning steps and an overview of the coding is given in this document, but all steps and code are available in the README of this repository: https://github.com/CharlHS/Data_Science_871_21625247_ML_Project
+
+
+The data is partitioned into training and validation data. 90% of the dataset is used as the training data, on which the two prediction models are trained, and the remaining 10% is used as the verification dataset, which is used to test the predictive ability of the models.
+```{r}
+fmxdat::source_all("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/code")
+# Machine Learning
+oscars_ml = oscars_clean %>% mutate(film=NULL, year_film=NULL, nom_bp=NULL)
+#oscars_ml$won_bp = as.factor(oscars_ml$won_bp)
+#oscars_ml = factor(oscars_ml,oscars$won_bp)
+
+oscars_ml = oscars_ml %>% mutate(won_bp = as.factor(won_bp))
+oscars_ml = oscars_ml %>% mutate(win_bafta = as.factor(win_bafta))
+oscars_ml = oscars_ml %>% mutate(win_gg = as.factor(win_gg))
+oscars_ml = oscars_ml %>% mutate(nom_dir = as.factor(nom_dir))
+oscars_ml = oscars_ml %>% mutate(nom_aml = as.factor(nom_aml))
+oscars_ml = oscars_ml %>% mutate(nom_afl = as.factor(nom_afl))
+oscars_ml = oscars_ml %>% mutate(nom_cin = as.factor(nom_cin))
+oscars_ml = oscars_ml %>% mutate(nom_prod = as.factor(nom_prod))
+oscars_ml = oscars_ml %>% mutate(nom_wa = as.factor(nom_wa))
+oscars_ml = oscars_ml %>% mutate(nom_wo = as.factor(nom_wo))
+oscars_ml = oscars_ml %>% mutate(nom_fm = as.factor(nom_fm))
+oscars_ml = oscars_ml %>% mutate(nom_mo = as.factor(nom_mo))
+oscars_ml = oscars_ml %>% mutate(nom_ms = as.factor(nom_ms))
+oscars_ml = oscars_ml %>% mutate(nom_ams = as.factor(nom_ams))
+oscars_ml = oscars_ml %>% mutate(nom_afs = as.factor(nom_afs))
+oscars_ml = oscars_ml %>% mutate(nom_vis = as.factor(nom_vis))
+oscars_ml = oscars_ml %>% mutate(nom_cos = as.factor(nom_cos))
+oscars_ml = oscars_ml %>% mutate(nom_mak = as.factor(nom_mak))
+oscars_ml = oscars_ml %>% mutate(nom_sm = as.factor(nom_sm))
+```
+
+
+```{r}
+# Create a Validation Dataset:
+# create a list of 70% of the rows in the original dataset we can use for training
+validation_index = createDataPartition(oscars_ml$won_bp, p=0.9, list=FALSE)
+# select 30% of the data for validation
+validation = oscars_ml[-validation_index,]
+# use the remaining 80% of data to training and testing the models
+dataset = oscars_ml[validation_index,]
+```
+
+
+```{r}
+# Summarize data
+# list types for each attribute
+sapply(dataset, class)
+```
+
+```{r}
+# list the possible output values:
+levels(dataset$won_bp)
+```
+Below is a frequency table and a bar plot of the predicted variable won_bp within the training data, where 0 indicated that the film didn't win Best Picture and 1 indicates that it did:
+```{r, echo=FALSE}
+# summarise distribution of the output values:
+percentage = prop.table(table(dataset$won_bp))*100
+cbind(freq=table(dataset$won_bp), percentage=percentage)
+```
+
+```{r,, echo=FALSE, results='hide',message=FALSE}
+# Visualise the Data:
+# split input & output
+x = dataset[,1:22]
+y = dataset[,23]
+```
+
+```{r}
+# barplot for class breakdown
+ plot(y)
+```
+This shows that the training data includes 357 films, of which 81% did not win Best Picture at the Oscars and 19% did. This large different in frequency between the two possible outcomes could be problematic, but unfortunately a lot more films are nominated than win, by design.
+
+```{r}
+# Summary of attributes:
+# summarise the distribution of values in the training dataset:
+summary(dataset)
+```
+
+
+```{r}
+# Visualise the Data:
+# split input & output
+# x = dataset[,1:22]
+# y = dataset[,23]
+# Boxplot each attribute in one image
+# par(mfrow=c(1,22))
+# for(i in 1:22){
+#    boxplot(x[,i], main = names(dataset)[i])
+#}
+```
+
+
+
+
+```{r}
+# Multivariate
+# scatterplot matrix
+# pairs(~imdb_score + metascore + won_bp, data = dataset)
+
+# featurePlot(x=x,y=y,plot="ellipse")
+# sapply(dataset, class)
+# featurePlot(x=x, y=y, plot="box")
+```
+
+# Models
+Next, the models can be trained. For parameter tuning, 10-fold Cross Validation methods are used as controls. 
+
+```{r, results='hide',message=FALSE}
+# Build model:
+# Run algorithm with 10-fold cross validation
+control = trainControl(method="cv", number=10, search = "random",savePredictions = TRUE)
+metric = "Accuracy"
+```
+
+First, the Linear Discriminant Analysis (LDA) model is trained. It is the simpler of the two models, and more computationally efficient.
+```{r, results='hide',message=FALSE}
+# a) linear algorithms
+set.seed(7)
+fit.lda = train(won_bp~., data=dataset, method="lda", metric = metric, preProc=c("center", "scale") , trControl=control)
+```
+
+Next, the Random Forest (RF) model is trained. While it is a lot more computationally complex, it can in some cases be better at predicting values.
+```{r, results='hide',message=FALSE}
+# Random Forest
+set.seed(7)
+fit.rf = train(won_bp~., data=dataset, method="rf", metric=metric, preProc=c("center", "scale"), trControl=control)
+```
+For both models, the same seed is set, to make comparison between the results of the two, as well as reproducibility.
+
+
+After training the two models on the training data, it is time to compare the two models. We both summarise the results, as well as set up a plot of the accuracy and kappa measures of the two plots.
+```{r, echo=FALSE,message=FALSE}
+# Select Best Model
+# summarize accuracy
+results = resamples(list(lda = fit.lda, rf=fit.rf))
+summary(results)
+
+dotplot(results)
+```
+From this we can see that the LDA model seems to be a better fit. While the Accuracy of the LDA and RF models are quite similar and quite high, with narrow distributions, there is a large difference in the Kappa measures. While both have quite low Kappa values, the distribution of the LDA model has a better distribution, with a higher mean and median for Kappa. This seems to indicate that, between the two, the LDA might be a more appropriate model.
+
+# Comparison of the Confusion Matrices:
+Next we compare the confusion matrices of the two. From this we can compare the sensitivity and specificity measure of the two models.
+
+Estimated Skill of the LDA model:
+```{r, echo=FALSE, message=FALSE}
+# estimate skill of LDA on validation dataset
+print(fit.lda)
+predictions.lda = predict(fit.lda, validation)
+confusionMatrix(predictions.lda, validation$won_bp)
+predictions.lda = predict(fit.lda, validation, type = "prob")
+```
+Estimated Skill of the RF model:
+```{r, echo=FALSE, message=FALSE}
+# estimate skill of RF on validation dataset
+print(fit.rf)
+predictions.rf = predict(fit.rf, validation)
+confusionMatrix(predictions.rf, validation$won_bp)
+predictions.rf = predict(fit.rf, validation, type = "prob")
+```
+From the confusion matrices of the two, we can see that, while the RF model has higher sensitivity, it lacks adequate specificity. This means that the RF model is far more likely to give false negatives in its predictions. The LDA model is a lot more accurate in general, so it seems to be a better fit. The Kappa value is much higher for the LDA model than for the RF model, indicating better fit as well.
+
+# ROCs:
+And finally, it is necessary to compare the ROC curves of the two models. The important measure here is the AUC measure (Area under curve). This indicates the tradeoff between the models' true positive rate to its false positive rate. The higher the AUC, the better.
+
+LDA model:
+```{r}
+# ROC for LDA
+pred_obj.lda = prediction(predictions.lda[,2],validation$won_bp)
+roc_perf.lda = performance(pred_obj.lda, "tpr", "fpr")
+auc.lda = performance(pred_obj.lda, "auc")
+
+# Plot ROC
+plot(roc_perf.lda, main = "ROC Curve", colorize = TRUE)
+text(0.5, 0.3, paste("AUC =", auc.lda@y.values[[1]]), cex = 1.2)
+```
+
+RF model:
+```{r}
+# ROC for Random Forest
+pred_obj.rf = prediction(predictions.rf[,2],validation$won_bp)
+roc_perf.rf = performance(pred_obj.rf, "tpr", "fpr")
+auc.rf = performance(pred_obj.rf, "auc")
+
+# Plot ROC
+plot(roc_perf.rf, main = "ROC Curve", colorize = TRUE)
+text(0.5, 0.3, paste("AUC =", auc.rf@y.values[[1]]), cex = 1.2)
+```
+
+From this we can see that the LDA model is definitely more fitting. The AUC of the LDA is much larger, so it has a better trade-off of specificity and sensitivity.
+
+
+# Testing Predictions
+
+```{r}
+# Import 2023 Oscar nominees
+oscars_2023 = read_excel("D:/User folders/Documents/2023 Stellenbosch MCom (Economics)/Semester 1/Data Science for Economics and Finance 871/Data_Science_Project/Project/data/oscar/2023.xlsx")
+films_23 = oscars_2023$film
+table_23 = oscars_2023
+oscars_2023 = oscars_2023 %>% mutate(film=NULL, year_film=NULL)
+oscars_2023 = oscars_2023 %>% mutate(won_bp = as.factor(won_bp))
+oscars_2023 = oscars_2023 %>% mutate(win_bafta = as.factor(win_bafta))
+oscars_2023 = oscars_2023 %>% mutate(win_gg = as.factor(win_gg))
+oscars_2023 = oscars_2023 %>% mutate(nom_dir = as.factor(nom_dir))
+oscars_2023 = oscars_2023 %>% mutate(nom_aml = as.factor(nom_aml))
+oscars_2023 = oscars_2023 %>% mutate(nom_afl = as.factor(nom_afl))
+oscars_2023 = oscars_2023 %>% mutate(nom_cin = as.factor(nom_cin))
+oscars_2023 = oscars_2023 %>% mutate(nom_prod = as.factor(nom_prod))
+oscars_2023 = oscars_2023 %>% mutate(nom_wa = as.factor(nom_wa))
+oscars_2023 = oscars_2023 %>% mutate(nom_wo = as.factor(nom_wo))
+oscars_2023 = oscars_2023 %>% mutate(nom_fm = as.factor(nom_fm))
+oscars_2023 = oscars_2023 %>% mutate(nom_mo = as.factor(nom_mo))
+oscars_2023 = oscars_2023 %>% mutate(nom_ms = as.factor(nom_ms))
+oscars_2023 = oscars_2023 %>% mutate(nom_ams = as.factor(nom_ams))
+oscars_2023 = oscars_2023 %>% mutate(nom_afs = as.factor(nom_afs))
+oscars_2023 = oscars_2023 %>% mutate(nom_vis = as.factor(nom_vis))
+oscars_2023 = oscars_2023 %>% mutate(nom_cos = as.factor(nom_cos))
+oscars_2023 = oscars_2023 %>% mutate(nom_mak = as.factor(nom_mak))
+oscars_2023 = oscars_2023 %>% mutate(nom_sm = as.factor(nom_sm))
+```
+
+Based on the results and metrics seen in the previous sections, the LDA model is most appropriate to predict actual Oscar Best Picture winners. In this section, a dataset of the 2023 Best Picture nominees (on which the model has not been trained) will be used to predict which film should have won, according to the model. Here is a table of the films' attributes:
+
+```{r}
+table_23 = table_23 %>% select(film, imdb_score, metascore, win_bafta, win_gg, num_gg, num_ac_noms,won_bp)
+table_23 = table_23 %>% rename(Film = film, IMDB=imdb_score,Metacritic = metascore, Bafta = win_bafta,Golden_Globe=win_gg, Number_of_Golden_Globes=num_gg, Oscar_Nominations = num_ac_noms, Best_Picture=won_bp)
+table_23 = table_23 %>% mutate(Bafta = ifelse(Bafta==1,"Yes","No"), Golden_Globe = ifelse(Golden_Globe==1,"Yes","No"), Best_Picture = ifelse(Best_Picture==1,"Yes","No"))
+table_23 = as.data.frame(table_23)
+print(table_23)
+```
+
+As you can see, the actual winner was Everything Everywhere All at once. Compare this to the prediction from the model:
+
+```{r, echo=FALSE,message=FALSE}
+# Make a prediction for 2023 movies
+pred_23 = predict(fit.lda, oscars_2023)
+output_23 = films_23[pred_23==1]
+print(output_23)
+```
+
+As can be seen, the model predicts that The Banshees of Inisherin should have been the winner, while this was obviously not the case. This does not necessarily mean that the model is completely inaccurate, as this films does, on paper, look quite similar to Everything Everywhere all at Once. It won more Golden Globes (3 vs 2), won the Golden Globe for Best Drama, has a similar IMDB rating and even a higher Metacritic score. Everything Everywhere all at Once did however have a lot of other attributes that aren't captured in the data, i.e. having a larger cultural impact, having a female minority lead, and being directed and written by minority individuals. This shows that there will always be some features that can't necessarily captured by numerical factors. This leaves an opportunity for further improvements to the model, namely adding some more qualitative factors beyond awards.
+
+# Conclusion
+In conclusion, we can see that the LDA model is a better fit, but can still be improved. One possible way to do this would be to expand the data used in the model. One way to do this would be to add other predictor variables to the model, for example Rotten Tomatoes scores or more pre-Oscar awards ceremony data. This can help improve the model accuracy, and might even cut down its issues with false positive predictions. More sophisticated algorithms could also help improve the model.
+
+Overall, the LDA model was not successful at predicting the 2023 Best Picture winner. This is likely due to attributes outside the model, but could also be due to flaws within the model itself. Further improvements, including adding more qualitative attributes to the model, could be beneficial to improving model quality and improving predictions.
